@@ -12,7 +12,10 @@ class OrderController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Order::with(['items'])->latest();
+        // complaints_count, not the complaints themselves: the sales list only
+        // needs to know an order came back, so its row can offer to open the
+        // complaint rather than pretending the bill was the end of it.
+        $query = Order::with(['items'])->withCount('complaints')->latest();
 
         if ($request->has('date')) {
             $query->whereDate('created_at', $request->date);
@@ -297,7 +300,7 @@ class OrderController extends Controller
 
     public function show(Order $order): JsonResponse
     {
-        return response()->json($order->load(['items']));
+        return response()->json($order->load(['items', 'complaints'])->loadCount('complaints'));
     }
 
     public function update(Request $request, Order $order): JsonResponse

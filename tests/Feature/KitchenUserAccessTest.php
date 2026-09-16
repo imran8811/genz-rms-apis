@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Order;
+use App\Models\OrderComplaint;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -95,6 +96,69 @@ class KitchenUserAccessTest extends TestCase
                 ->getJson($path)
                 ->assertForbidden();
         }
+    }
+
+    /**
+     * The complaints tab on the same board: the kitchen is *told* about a
+     * complaint and can say it has seen it — which is what stops the alarm.
+     *
+     * It reads the **register** too. The board's tab is one day, and whether
+     * the same dish has come back three times this week is a kitchen question
+     * that cannot be answered from today alone.
+     */
+    public function test_kitchen_user_can_read_and_acknowledge_complaints(): void
+    {
+        $complaint = OrderComplaint::create([
+            'order_id' => $this->order()->id,
+            'body' => 'Pizza was cold.',
+            'status' => 'new',
+        ]);
+        $user = $this->kitchenUser();
+
+        $this->actingAs($user, 'sanctum')
+            ->getJson('/api/complaints/kitchen')
+            ->assertOk();
+
+        $this->actingAs($user, 'sanctum')
+            ->getJson('/api/complaints')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $complaint->id);
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson("/api/complaints/{$complaint->id}/seen")
+            ->assertOk()
+            ->assertJsonPath('status', 'seen');
+    }
+
+    /**
+     * Reading the register is not administering it: logging a complaint,
+     * closing one off and deleting one all stay off the kitchen terminal.
+     */
+    public function test_kitchen_user_cannot_log_or_close_a_complaint(): void
+    {
+        $order = $this->order();
+        $complaint = OrderComplaint::create([
+            'order_id' => $order->id,
+            'body' => 'Pizza was cold.',
+            'status' => 'new',
+        ]);
+        $user = $this->kitchenUser();
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson("/api/orders/{$order->id}/complaints", ['body' => 'made up'])
+            ->assertForbidden();
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson("/api/complaints/{$complaint->id}/resolve")
+            ->assertForbidden();
+
+        $this->actingAs($user, 'sanctum')
+            ->postJson("/api/complaints/{$complaint->id}/reopen")
+            ->assertForbidden();
+
+        $this->actingAs($user, 'sanctum')
+            ->deleteJson("/api/complaints/{$complaint->id}")
+            ->assertForbidden();
     }
 
     /** Asking "how much longer?" is the front desk's job, not the kitchen's. */

@@ -34,6 +34,18 @@ class RestrictKitchenUser
         'orders/{order}/kitchen-status',
         // Answering "how much longer?" — asking is the front desk's job.
         'orders/{order}/eta',
+        // The complaints tab on the same board, and the OK that silences its
+        // alarm.
+        'complaints/kitchen',
+        'complaints/{complaint}/seen',
+        // The register, read-only. The board's tab covers one day, and the
+        // kitchen has a real reason to look further back — whether this is the
+        // third time this week the same dish has come back is a kitchen
+        // question, and it can't be answered from today's tab. Reading is all
+        // this buys: logging a complaint, closing one off, reopening and
+        // deleting are all absent below, so the kitchen is *told* about
+        // complaints and can look them up, but does not administer them.
+        'complaints',
     ];
 
     public function handle(Request $request, Closure $next): Response

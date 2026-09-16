@@ -49,6 +49,16 @@ class Order extends Model
         return $this->hasMany(OrderItem::class);
     }
 
+    /**
+     * Customer complaints logged against this bill — see OrderComplaint. Sales
+     * lists orders with `withCount('complaints')` so a row can show that this
+     * one came back without loading the complaints themselves.
+     */
+    public function complaints(): HasMany
+    {
+        return $this->hasMany(OrderComplaint::class);
+    }
+
     /** Rung up at the till, so it reaches the kitchen the moment it is saved. */
     public function isCounterOrder(): bool
     {

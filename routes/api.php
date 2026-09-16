@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\Integration\WebOrderController;
 use App\Http\Controllers\Api\InventoryController;
+use App\Http\Controllers\Api\OrderComplaintController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PurchaseController;
 use App\Http\Controllers\Api\RecipeController;
@@ -65,6 +66,18 @@ Route::middleware(['auth:sanctum', RestrictKitchenUser::class])->group(function 
     // Preparation time: front desk asks "how long?", kitchen answers in minutes.
     Route::post('orders/{order}/eta-request', [OrderController::class, 'etaRequest']);
     Route::post('orders/{order}/eta', [OrderController::class, 'eta']);
+    // Customer complaints against an order. `complaints/kitchen` must stay above
+    // `complaints/{complaint}/…` so it isn't captured as a complaint id.
+    Route::get('complaints/kitchen', [OrderComplaintController::class, 'kitchen']);
+    Route::get('complaints', [OrderComplaintController::class, 'index']);
+    Route::post('orders/{order}/complaints', [OrderComplaintController::class, 'store']);
+    // The kitchen acknowledges ('seen' — this is what stops the alarm); closing
+    // a complaint off is the front desk's call and is off the kitchen allowlist.
+    Route::post('complaints/{complaint}/seen', [OrderComplaintController::class, 'seen']);
+    Route::post('complaints/{complaint}/resolve', [OrderComplaintController::class, 'resolve']);
+    Route::post('complaints/{complaint}/reopen', [OrderComplaintController::class, 'reopen']);
+    // Admins only, and it really is gone — there are no soft deletes on this table.
+    Route::delete('complaints/{complaint}', [OrderComplaintController::class, 'destroy']);
     Route::apiResource('orders', OrderController::class);
 
     // Sales

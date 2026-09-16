@@ -32,7 +32,9 @@ admin-only bits (dashboard, costing, deleting staff food logs); `user` is the co
 `App\Http\Middleware\RestrictKitchenUser`, which wraps the *entire* `auth:sanctum` group in
 `routes/api.php`:
 - **Deny-by-default allowlist.** A kitchen login may call only `me`, `logout`, `orders/kitchen`,
-  `orders/{order}/kitchen-status` and `orders/{order}/eta` — everything else `403`s with
+  `orders/{order}/kitchen-status`, `orders/{order}/eta`, `complaints/kitchen`,
+  `complaints/{complaint}/seen` and `complaints` (the register, **read-only** — see below)
+  — everything else `403`s with
   *"This account only has access to the kitchen orders board."* A route added to the group later is
   closed to the kitchen until someone puts it on that list, which is the point: the failure mode is
   a locked door, not a leaked one.
@@ -108,6 +110,52 @@ stale number).
   new-order alarm ringing behind the answer makes no sense.
 - `kitchen-status` keeps them honest: `ready` drops an outstanding question, and stepping back to
   `new` clears all three columns.
+
+## Customer complaints (counter takes them, kitchen is alarmed, counter closes them)
+`order_complaints` hangs off an order (`cascadeOnDelete` — a deleted bill has no complaint to
+answer) and carries the customer's words verbatim in `body`, plus `logged_by` **and**
+`logged_by_name` (snapshotted, so a complaint stays attributable after that login is deleted).
+Three states, and the middle one is the point:
+- **`new`** — nobody in the back has looked at it. **This is the only state that alarms the kitchen
+  board**, where it plays a sound of its own (see `genz-rms-fe` → "Complaints").
+- **`seen`** — the kitchen pressed OK. *"We know"*, not *"it's fixed"*: the complaint is still open,
+  it has just stopped making noise. Deliberately separate from resolution, because the alarm has to
+  stop in seconds while putting a complaint right can take a shift.
+- **`resolved`** — the front desk closed it off (refund, remake, phone call), optionally with a note
+  in `resolution`. `seen_at` is **backfilled** when the counter resolves one the kitchen never
+  acknowledged, so no complaint reads as never-seen-by-anyone.
+
+Endpoints:
+- `POST /api/orders/{order}/complaints` `{ body }` — front desk logs one. Nothing is validated about
+  *which* order: a complaint about a cancelled or a week-old bill is still a complaint, and refusing
+  it would only mean the counter writing it somewhere the kitchen never sees.
+- `GET  /api/complaints/kitchen[?date=]` — the board's ⚠ Complaints tab: one day, **every state**,
+  newest first. Acknowledged rows stay on it — the tab is also the kitchen's record of what came
+  back today, and a complaint that vanished on OK could never be re-read.
+- `GET  /api/complaints` — the front desk's register (paginated, newest first, each row carrying its
+  order and items). Filters: `status` (`new` / `seen` / `resolved`, or **`open`** for new+seen),
+  `order_id`, `date`, `from`/`to`.
+- `POST /api/complaints/{complaint}/seen` — kitchen acknowledges. Idempotent (two terminals must not
+  move `seen_at`) and it **never moves a complaint backwards** — pressing OK on a resolved one can't
+  reopen it.
+- `POST /api/complaints/{complaint}/resolve` `{ resolution? }` / `.../reopen` — front desk closes or
+  reopens. Reopening returns it to **`seen`, never `new`**: the kitchen has already been told, and
+  restarting the alarm over a complaint it acknowledged an hour ago is noise, not news.
+- `DELETE /api/complaints/{complaint}` — **admins only** (`403` otherwise) and a **hard delete**:
+  `order_complaints` has no soft-delete column, so the row is gone. This is not how a complaint
+  normally ends — `resolve` is. It is for the ones that should never have been on the register at
+  all (a test entry, a duplicate, one logged against the wrong bill); resolving those instead would
+  leave the register overstating how often customers actually complain. Any state may go, `new`
+  included — a mistaken complaint is exactly the one the counter wants gone before the kitchen board
+  alarms over it.
+- **Kitchen allowlist:** `complaints/kitchen`, `complaints/{complaint}/seen` **and `GET
+  /complaints`**. The register is on the list because the board's tab is one day deep and *"has this
+  dish come back before?"* is a kitchen question — but reading is all it buys. Logging, resolving,
+  reopening and deleting all still 403 for a kitchen login: it is *told* about complaints and may
+  look them up, it does not administer them. (`GET /complaints` is the read feed; there is no
+  separate kitchen-scoped version of it, so a kitchen login sees the same rows the front desk does.)
+- `GET /orders` now carries **`complaints_count`** per row (`withCount`), so the Sales list can show
+  that a bill came back without loading the complaints themselves.
 
 ## Staff: inactive ≠ deleted
 Two deliberately different actions — `DELETE /staff/{id}` used to just flip `is_active`, and no
