@@ -26,6 +26,9 @@ class SettingController extends Controller
             // runs on UTC, so the timezone is what makes "2:31pm" mean 2:31pm.
             'late_fine_amount', 'late_fine_grace_minutes', 'late_fine_shift_start',
             'restaurant_timezone',
+            // The day stock control began. Purchases and bills before it are
+            // history, not shelf movements — see App\Services\StockService.
+            'stock_opening_date',
         ];
 
         foreach ($request->only($allowed) as $key => $value) {

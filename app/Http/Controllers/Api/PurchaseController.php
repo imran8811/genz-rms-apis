@@ -6,13 +6,17 @@ use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
 use App\Models\Purchase;
 use App\Services\PurchasePricingService;
+use App\Services\StockService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
 class PurchaseController extends Controller
 {
-    public function __construct(private PurchasePricingService $pricing) {}
+    public function __construct(
+        private PurchasePricingService $pricing,
+        private StockService $stock,
+    ) {}
 
     public function index(Request $request): JsonResponse
     {
@@ -38,6 +42,8 @@ class PurchaseController extends Controller
         $purchase = Purchase::create($data);
         // Re-price the matching ingredient from this (now latest) purchase.
         $this->pricing->syncFromLatestPurchase($this->pricing->resolveItem($purchase));
+        // …and, for an ingredient under stock control, put the delivery on the shelf.
+        $this->stock->syncPurchase($purchase);
 
         return response()->json($purchase, 201);
     }
@@ -58,12 +64,18 @@ class PurchaseController extends Controller
             $this->pricing->syncFromLatestPurchase($previousItem);
         }
 
+        // Restates this purchase's delivery rather than adding a second one, and
+        // takes it off the old shelf if the purchase was moved to another item.
+        $this->stock->syncPurchase($purchase->fresh());
+
         return response()->json($purchase);
     }
 
     public function destroy(Purchase $purchase): JsonResponse
     {
         $item = $this->pricing->resolveItem($purchase);
+        // Withdraw the delivery *before* the row goes, while it can still be found.
+        $this->stock->forgetPurchase($purchase);
         $purchase->delete();
         // The ingredient now re-derives its price from its latest remaining purchase.
         $this->pricing->syncFromLatestPurchase($item);

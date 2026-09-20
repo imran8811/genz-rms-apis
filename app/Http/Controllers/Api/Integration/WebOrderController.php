@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Integration;
 use App\Http\Controllers\Controller;
 use App\Models\MenuItem;
 use App\Models\Order;
+use App\Services\StockService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +19,8 @@ use Illuminate\Support\Facades\DB;
  */
 class WebOrderController extends Controller
 {
+    public function __construct(private StockService $stock) {}
+
     public function store(Request $request): JsonResponse
     {
         $secret = config('genz.integration_secret');
@@ -75,6 +78,10 @@ class WebOrderController extends Controller
                         'line_total'      => $item['line_total'],
                         'deal_selections' => $item['deal_selections'] ?? null,
                     ], $data['items']));
+
+                    // An online order is a sale from the moment it is forwarded,
+                    // so it comes off the shelf now; rejecting it puts it back.
+                    $this->stock->syncOrder($order);
 
                     return $order;
                 });

@@ -157,6 +157,66 @@ Endpoints:
 - `GET /orders` now carries **`complaints_count`** per row (`withCount`), so the Sales list can show
   that a bill came back without loading the complaints themselves.
 
+## Stock: derived from purchases and sales, never typed
+`inventory_items.current_stock` used to be moved **only** by the manual adjust button — Purchasing
+worked out how much had arrived and never put it on a shelf, Billing never took anything off one —
+so every item sat at its default `0` and the whole module read "Out". Stock is now a **replay of the
+ledger** in `stock_movements`: deliveries in, sales out, the occasional stocktake, ordered by when
+they *happened*. `App\Services\StockService` owns the whole rule.
+
+- **Derived, not accumulated.** Nothing writes `current_stock` directly; it caches the replay. A
+  running total nudged per write drifts the first time a bill is edited or a delivery deleted, and
+  nothing afterwards can tell that it has. `php artisan stock:rebuild` (or `POST
+  /inventory/rebuild`) re-derives every balance from the same purchases and bills the reports use —
+  which is why re-deriving is never a repair with a risk attached, and why it is also the backfill.
+- **Every movement names its cause** (`source_type` + `source_id`, unique per item), so correcting
+  a purchase restates its delivery instead of stacking a second one, and cancelling a bill withdraws
+  its sale. `occurred_at` is when it happened, not when the row was written, so Friday's entry of
+  Wednesday's delivery replays on the right side of Thursday's stocktake.
+- **`adjustment` is a stocktake, not a delta**: it *sets* the balance, superseding everything before
+  it. That is how a drifted shelf is put right without hunting for the movement that was wrong.
+- **Balances may go negative.** Selling more than was ever bought means deliveries are not being
+  recorded, and clamping at zero would throw away the only evidence of it.
+
+### `track_stock` is opt-in, and that is the point
+Most of the ~90 `inventory_items` rows are raw ingredients consumed through recipes in grams; nobody
+counts them off a shelf. Reporting them "Out" is what buried the real shortages. Only `track_stock`
+items take part — resale goods that arrive whole and leave whole — and everything else reports
+status **`Untracked`** with no balance at all. Recipe consumption is deliberately **not** deducted
+yet; switching an ingredient on would only give it a balance nothing maintains.
+
+### A sale finds its shelf by (menu item, size)
+- `inventory_items.menu_item_id` + `variant` is the link. A sized drink is **one SKU per size** — a
+  350ml Coke and a 1.5Ltr Coke are different shelves — so the link is to the pair, not the item.
+- **Names are deliberately not the link.** The ingredient master says `coke 345ml`; the menu says
+  `Coca Cola` / `350ml`. Matching on that would silently never fire. `StockService::normalizeSize()`
+  folds the spellings that *are* the same bottle (`1.5Ltr`/`1.5 L`/`1.5litre`, and the `345ml`↔
+  `350ml` alias) so the two halves of the system can keep their own wording.
+- **The till now sends `items.*.menu_item_slug`.** It reads the menu straight from the genz-admin
+  feed and holds no RMS ids, so `order_items.menu_item_id` was null on *every* POS bill; the backend
+  resolves the slug against its mirror exactly as `Integration\WebOrderController` already did.
+  Bills written before that fall back to matching the mirror on `item_name`, which is what lets a
+  rebuild use sales already on file.
+- **Deal drinks come off a per-size default** (`is_deal_default`, one item per size). A deal records
+  `"2x Drink 1.5Ltr"` and never the flavour — the deal picker has nowhere to choose one — so the
+  bottle count stays right while the flavour split cannot. Parsed off the wording stored **on the
+  bill**, so old orders stay counted as they were sold. Giving deals a real flavour picker is the
+  fix; until then this is a known approximation.
+
+### Where stock starts
+`stock_opening_date` (setting, default `2026-09-01` — see `StockService::DEFAULT_OPENING_DATE`).
+Purchases and bills before it are history, not shelf movements: replaying months of trade nobody was
+counting would produce a balance that looks authoritative and is simply wrong. Every tracked item
+therefore opens at zero, and a stocktake corrects it to what is actually there. **The app runs on
+UTC and the restaurant on UTC+5**, so the date is read at the counter's clock (same trap as
+`LateFineService`) — read naively, "1 September" would start at 5am Karachi and drop the first
+evening's trade.
+
+Endpoints: `GET /inventory` (`?tracked=1`), `POST|PUT|DELETE /inventory[/{item}]` (carries
+`track_stock`, `menu_item_id`, `variant`, `is_deal_default`), `POST /inventory/adjust`,
+`GET /inventory/movements`, `POST /inventory/rebuild`. Covered by
+`tests/Feature/StockTrackingTest.php`.
+
 ## Staff: inactive ≠ deleted
 Two deliberately different actions — `DELETE /staff/{id}` used to just flip `is_active`, and no
 longer does:
@@ -231,6 +291,7 @@ composer run setup       # install, copy .env, key:generate, migrate, npm build
 composer run dev         # serve + queue listener + pail logs + vite (concurrently)
 php artisan serve        # API server only
 php artisan migrate      # run migrations
+php artisan stock:rebuild # re-derive every tracked stock balance (safe to run any time)
 composer run test        # config:clear + artisan test (PHPUnit)
 ./vendor/bin/pint        # code style (Laravel Pint)
 ```

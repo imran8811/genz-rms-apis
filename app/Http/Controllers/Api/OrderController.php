@@ -3,13 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\MenuItem;
 use App\Models\Order;
+use App\Services\StockService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
 {
+    public function __construct(private StockService $stock) {}
+
     public function index(Request $request): JsonResponse
     {
         // complaints_count, not the complaints themselves: the sales list only
@@ -152,6 +156,9 @@ class OrderController extends Controller
         $order->status = 'cancelled';
         $order->save();
 
+        // Refused, so nothing left the shelf — put it back.
+        $this->stock->syncOrder($order);
+
         return response()->json($order->refresh()->load('items'));
     }
 
@@ -278,6 +285,11 @@ class OrderController extends Controller
             'notes' => 'nullable|string',
             'items' => 'required|array|min:1',
             'items.*.menu_item_id' => 'nullable|exists:menu_items,id',
+            // The till reads the menu straight from the genz-admin feed, so the
+            // only identity it holds is the slug — the same one web orders
+            // arrive with. Without it a bill line is just a name, and stock has
+            // nothing reliable to come off.
+            'items.*.menu_item_slug' => 'nullable|string',
             'items.*.item_name' => 'required|string',
             'items.*.size' => 'nullable|string',
             'items.*.unit_price' => 'required|integer|min:0',
@@ -290,7 +302,11 @@ class OrderController extends Controller
             $orderNumber = (string) $this->computeNextNumber();
             $data['source'] = $data['source'] ?? 'pos';
             $order = Order::create([...$data, 'order_number' => $orderNumber]);
-            $order->items()->createMany($data['items']);
+            $order->items()->createMany($this->withMenuItemIds($data['items']));
+
+            // Take what was sold off the shelf. Inside the transaction on
+            // purpose: a bill that rolled back must not leave stock missing.
+            $this->stock->syncOrder($order);
 
             // refresh() so the response carries DB-level defaults (kitchen_status)
             // rather than nulls the caller would have to guess at.
@@ -338,14 +354,49 @@ class OrderController extends Controller
 
             $order->update($data);
 
+            // Quantities may have changed and the bill may have just been
+            // cancelled — either way the shelf follows the bill, so re-derive
+            // rather than trying to work out the difference.
+            $this->stock->syncOrder($order->refresh());
+
             return response()->json($order->refresh()->load('items'));
         });
     }
 
     public function destroy(Order $order): JsonResponse
     {
+        // Withdraw the sale first, while the order is still there to be found.
+        $this->stock->forgetOrder($order);
         $order->delete();
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * Resolve each line's menu-item slug to the local mirror's id.
+     *
+     * The till holds slugs, not ids — it reads the menu from the genz-admin feed
+     * rather than this app — so the resolution has to happen here, exactly as it
+     * does for orders forwarded in from the website. Lines whose slug matches
+     * nothing keep a null id and are simply not stock-bearing, which is what a
+     * menu item this mirror has never been synced with actually is.
+     *
+     * @param  array<int,array<string,mixed>>  $items
+     * @return array<int,array<string,mixed>>
+     */
+    private function withMenuItemIds(array $items): array
+    {
+        $slugs = collect($items)->pluck('menu_item_slug')->filter()->unique();
+        $idBySlug = $slugs->isEmpty()
+            ? collect()
+            : MenuItem::whereIn('slug', $slugs)->pluck('id', 'slug');
+
+        return array_map(function (array $item) use ($idBySlug) {
+            $item['menu_item_id'] = $item['menu_item_id']
+                ?? $idBySlug[$item['menu_item_slug'] ?? ''] ?? null;
+            unset($item['menu_item_slug']);
+
+            return $item;
+        }, $items);
     }
 }

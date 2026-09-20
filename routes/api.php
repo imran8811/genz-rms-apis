@@ -104,6 +104,14 @@ Route::middleware(['auth:sanctum', RestrictKitchenUser::class])->group(function 
     Route::delete('inventory/{item}', [InventoryController::class, 'destroy']);
     Route::post('inventory/adjust', [InventoryController::class, 'adjust']);
     Route::get('inventory/movements', [InventoryController::class, 'movements']);
+    // Re-derive every balance from the purchases and bills on file. Safe to run
+    // at any time — stock is a replay of the ledger, not a running total.
+    Route::post('inventory/rebuild', [InventoryController::class, 'rebuild']);
+    // Put a whole menu category under stock control in one go (cold drinks).
+    // Deliberately inside the authenticated group rather than a token-guarded
+    // public URL like run-migration: the people who need it are already logged
+    // in as admins, so there is no reason to leave a door open on the internet.
+    Route::post('inventory/setup-category', [InventoryController::class, 'setupCategory']);
 
     // Costing / Recipes
     Route::get('costing/summary', [RecipeController::class, 'summary']);
