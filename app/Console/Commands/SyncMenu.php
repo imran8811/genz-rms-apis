@@ -4,7 +4,6 @@ namespace App\Console\Commands;
 
 use App\Services\MenuImporter;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Http;
 use Throwable;
 
 /**
@@ -21,40 +20,15 @@ class SyncMenu extends Command
 
     public function handle(MenuImporter $importer): int
     {
-        $url = $this->option('url') ?: config('genz.admin_menu_url');
-
-        if (! $url) {
-            $this->error('No menu feed URL configured. Set ADMIN_MENU_URL in .env or pass --url=');
-
-            return self::FAILURE;
-        }
-
-        $this->info("Fetching menu from {$url} …");
-
         try {
-            $response = Http::timeout(20)->acceptJson()->get($url);
+            $result = $importer->importFromFeed($this->option('url') ?: null);
         } catch (Throwable $e) {
-            $this->error('Request to genz-admin failed: '.$e->getMessage());
+            $this->error($e->getMessage());
 
             return self::FAILURE;
         }
 
-        if (! $response->successful()) {
-            $this->error('Feed returned HTTP '.$response->status());
-
-            return self::FAILURE;
-        }
-
-        $menu = $response->json();
-        if (! is_array($menu) || ! isset($menu['categories']) || ! is_array($menu['categories'])) {
-            $this->error('Unexpected feed format: missing "categories".');
-
-            return self::FAILURE;
-        }
-
-        $result = $importer->import($menu);
-
-        $this->info("Synced: {$result['categories']} categories, {$result['items']} items.");
+        $this->info("Synced from {$result['url']}: {$result['categories']} categories, {$result['items']} items.");
 
         return self::SUCCESS;
     }

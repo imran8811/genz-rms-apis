@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\Integration\WebOrderController;
 use App\Http\Controllers\Api\InventoryController;
+use App\Http\Controllers\Api\MenuSyncController;
 use App\Http\Controllers\Api\OrderComplaintController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PurchaseController;
@@ -50,6 +51,10 @@ Route::middleware(['auth:sanctum', RestrictKitchenUser::class])->group(function 
     // Menu read feed for POS billing (read-only mirror — authored in genz-admin,
     // pulled via `php artisan menu:sync`). Menu management was removed from the RMS.
     Route::apiResource('categories', CategoryController::class)->only(['index', 'show']);
+    // Refresh that mirror from genz-admin. `php artisan menu:sync` was the only
+    // way in, and the production host runs no commands — so anything keyed to
+    // menu_items (costing, recipes, stock) silently never saw a new menu item.
+    Route::post('menu/sync', [MenuSyncController::class, 'store']);
 
     // Orders / Billing
     Route::get('orders/next-number', [OrderController::class, 'nextNumber']);

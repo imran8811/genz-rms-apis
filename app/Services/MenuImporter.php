@@ -5,6 +5,9 @@ namespace App\Services;
 use App\Models\Category;
 use App\Models\MenuItem;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use RuntimeException;
+use Throwable;
 
 /**
  * Imports the canonical menu (menu.json shape) from genz-admin into the RMS's
@@ -21,6 +24,45 @@ use Illuminate\Support\Facades\DB;
  */
 class MenuImporter
 {
+    /**
+     * Fetch the canonical feed from genz-admin and import it.
+     *
+     * Lives here rather than in the artisan command because the command is not
+     * the only caller any more: the production host allows no shell, so the
+     * mirror is refreshed over HTTP instead. Keeping the fetch, the validation
+     * and the import in one place is what stops the two routes drifting into
+     * accepting different things.
+     *
+     * @return array{categories:int, items:int, url:string}
+     *
+     * @throws RuntimeException with a message worth showing the caller
+     */
+    public function importFromFeed(?string $url = null): array
+    {
+        $url = $url ?: config('genz.admin_menu_url');
+
+        if (! $url) {
+            throw new RuntimeException('No menu feed URL configured. Set ADMIN_MENU_URL in .env.');
+        }
+
+        try {
+            $response = Http::timeout(20)->acceptJson()->get($url);
+        } catch (Throwable $e) {
+            throw new RuntimeException('Could not reach genz-admin: '.$e->getMessage(), 0, $e);
+        }
+
+        if (! $response->successful()) {
+            throw new RuntimeException("The menu feed returned HTTP {$response->status()}.");
+        }
+
+        $menu = $response->json();
+        if (! is_array($menu) || ! is_array($menu['categories'] ?? null)) {
+            throw new RuntimeException('Unexpected feed format: no "categories".');
+        }
+
+        return [...$this->import($menu), 'url' => $url];
+    }
+
     /**
      * @param  array{categories?: array<int,array<string,mixed>>}  $menu
      * @return array{categories:int, items:int}
