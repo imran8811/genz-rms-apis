@@ -42,7 +42,7 @@ class LateFineTest extends TestCase
         parent::tearDown();
     }
 
-    /** sqlite keeps "14:47" verbatim where MySQL stores "14:47:00" — compare the clock, not the format. */
+    /** sqlite keeps "13:47" verbatim where MySQL stores "13:47:00" — compare the clock, not the format. */
     private function assertCheckIn(?string $expected, Staff $staff): void
     {
         $stored = StaffAttendance::where('staff_id', $staff->id)->value('check_in_time');
@@ -59,7 +59,7 @@ class LateFineTest extends TestCase
         app(StaffAttendanceController::class)->bulkStore($request, $this->fines);
     }
 
-    private function staff(string $shift = '2PM–2AM'): Staff
+    private function staff(string $shift = '1PM–1AM'): Staff
     {
         return Staff::create([
             'name' => 'Bilal', 'role' => 'Cashier', 'shift' => $shift,
@@ -67,13 +67,13 @@ class LateFineTest extends TestCase
         ]);
     }
 
-    public function test_a_2pm_shift_is_fined_from_1431(): void
+    public function test_a_1pm_shift_is_fined_from_1331(): void
     {
         $staff = $this->staff();
 
-        $this->assertNull($this->fines->sync($staff, '2026-08-15', '14:30', 'present'));
+        $this->assertNull($this->fines->sync($staff, '2026-08-15', '13:30', 'present'));
 
-        $fine = $this->fines->sync($staff, '2026-08-15', '14:31', 'present');
+        $fine = $this->fines->sync($staff, '2026-08-15', '13:31', 'present');
 
         $this->assertNotNull($fine);
         $this->assertSame(200, $fine->amount);
@@ -83,9 +83,9 @@ class LateFineTest extends TestCase
 
     public function test_the_shift_start_comes_from_the_staff_member(): void
     {
-        // 14:45 is late for a 2PM shift and early for a 5PM one.
-        $this->assertNotNull($this->fines->sync($this->staff('2PM–2AM'), '2026-08-15', '14:45', 'present'));
-        $this->assertNull($this->fines->sync($this->staff('5PM–2AM'), '2026-08-15', '14:45', 'present'));
+        // 13:45 is late for a 1PM shift and early for a 5PM one.
+        $this->assertNotNull($this->fines->sync($this->staff('1PM–1AM'), '2026-08-15', '13:45', 'present'));
+        $this->assertNull($this->fines->sync($this->staff('5PM–1AM'), '2026-08-15', '13:45', 'present'));
     }
 
     public function test_a_shift_without_a_time_falls_back_to_the_setting(): void
@@ -112,7 +112,7 @@ class LateFineTest extends TestCase
         $staff = $this->staff();
 
         $this->fines->sync($staff, '2026-08-15', '15:00', 'present');
-        $this->fines->sync($staff, '2026-08-15', '14:05', 'present');
+        $this->fines->sync($staff, '2026-08-15', '13:05', 'present');
 
         $this->assertSame(0, StaffFine::where('staff_id', $staff->id)->count());
     }
@@ -135,7 +135,7 @@ class LateFineTest extends TestCase
             'source' => 'manual', 'reason' => 'Broke a plate',
         ]);
 
-        $this->fines->sync($staff, '2026-08-15', '14:00', 'present');
+        $this->fines->sync($staff, '2026-08-15', '13:00', 'present');
 
         $this->assertSame(1, StaffFine::where('staff_id', $staff->id)->count());
     }
@@ -147,14 +147,14 @@ class LateFineTest extends TestCase
      */
     public function test_marking_someone_in_stamps_the_time_of_marking(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:47:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:47:00', self::TZ));
         $staff = $this->staff();
 
         $this->bulkStore('2026-08-15', [
             ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => null],
         ]);
 
-        $this->assertCheckIn('14:47', $staff);
+        $this->assertCheckIn('13:47', $staff);
         $this->assertSame(200, StaffFine::where('staff_id', $staff->id)->value('amount'));
         // The row itself should read Late, not Present.
         $this->assertSame('late', StaffAttendance::where('staff_id', $staff->id)->value('status'));
@@ -162,7 +162,7 @@ class LateFineTest extends TestCase
 
     public function test_an_explicit_half_day_is_not_rewritten_to_late(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:47:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:47:00', self::TZ));
         $staff = $this->staff();
 
         $this->bulkStore('2026-08-15', [
@@ -175,20 +175,20 @@ class LateFineTest extends TestCase
 
     public function test_marking_someone_in_within_the_grace_period_costs_nothing(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:20:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:20:00', self::TZ));
         $staff = $this->staff();
 
         $this->bulkStore('2026-08-15', [
             ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => null],
         ]);
 
-        $this->assertCheckIn('14:20', $staff);
+        $this->assertCheckIn('13:20', $staff);
         $this->assertSame(0, StaffFine::where('staff_id', $staff->id)->count());
     }
 
     public function test_an_absent_row_is_not_stamped(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:47:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:47:00', self::TZ));
         $staff = $this->staff();
 
         $this->bulkStore('2026-08-15', [
@@ -202,7 +202,7 @@ class LateFineTest extends TestCase
     /** Back-filling last week must not borrow today's clock. */
     public function test_a_past_day_is_not_stamped_with_todays_time(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:47:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:47:00', self::TZ));
         $staff = $this->staff();
 
         $this->bulkStore('2026-08-10', [
@@ -220,10 +220,10 @@ class LateFineTest extends TestCase
         $staff = $this->staff();
 
         $this->bulkStore('2026-08-15', [
-            ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => '14:10'],
+            ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => '13:10'],
         ]);
 
-        $this->assertCheckIn('14:10', $staff);
+        $this->assertCheckIn('13:10', $staff);
         $this->assertSame(0, StaffFine::where('staff_id', $staff->id)->count());
     }
 
@@ -234,7 +234,7 @@ class LateFineTest extends TestCase
      */
     public function test_re_saving_does_not_stamp_someone_already_marked_in(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:00:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:00:00', self::TZ));
         $staff = $this->staff();
         // Straight insert (no date cast) so the row looks exactly like one saved
         // before check-in times existed: present, no time.
@@ -255,7 +255,7 @@ class LateFineTest extends TestCase
     /** Turning up late in the evening is still a late arrival. */
     public function test_marking_an_absent_person_in_later_stamps_that_moment(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:00:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:00:00', self::TZ));
         $staff = $this->staff();
         $this->bulkStore('2026-08-15', [
             ['staff_id' => $staff->id, 'status' => 'absent', 'check_in_time' => null],
@@ -273,7 +273,7 @@ class LateFineTest extends TestCase
     /** A stored time must survive a save that doesn't echo it back. */
     public function test_a_stored_time_is_not_wiped_by_a_save_that_omits_it(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:47:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:47:00', self::TZ));
         $staff = $this->staff();
         $this->bulkStore('2026-08-15', [
             ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => null],
@@ -284,14 +284,14 @@ class LateFineTest extends TestCase
             ['staff_id' => $staff->id, 'status' => 'half_day', 'check_in_time' => null],
         ]);
 
-        $this->assertCheckIn('14:47', $staff);
+        $this->assertCheckIn('13:47', $staff);
         $this->assertSame(200, StaffFine::where('staff_id', $staff->id)->value('amount'));
     }
 
     /** Re-saving the day later must not re-stamp everyone with the later clock. */
     public function test_a_stamped_time_survives_a_later_save(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 14:20:00', self::TZ));
+        Carbon::setTestNow(Carbon::parse('2026-08-15 13:20:00', self::TZ));
         $staff = $this->staff();
         $this->bulkStore('2026-08-15', [
             ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => null],
@@ -300,10 +300,10 @@ class LateFineTest extends TestCase
         // The screen reloads the stored time and sends it back on the next save.
         Carbon::setTestNow(Carbon::parse('2026-08-15 20:00:00', self::TZ));
         $this->bulkStore('2026-08-15', [
-            ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => '14:20'],
+            ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => '13:20'],
         ]);
 
-        $this->assertCheckIn('14:20', $staff);
+        $this->assertCheckIn('13:20', $staff);
         $this->assertSame(0, StaffFine::where('staff_id', $staff->id)->count());
     }
 
@@ -312,7 +312,7 @@ class LateFineTest extends TestCase
         Setting::set('late_fine_amount', 350);
         Setting::set('late_fine_grace_minutes', 15);
 
-        $fine = $this->fines->sync($this->staff(), '2026-08-15', '14:20', 'present');
+        $fine = $this->fines->sync($this->staff(), '2026-08-15', '13:20', 'present');
 
         $this->assertSame(350, $fine->amount);
     }

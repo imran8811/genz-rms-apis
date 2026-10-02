@@ -60,13 +60,15 @@ class SalesController extends Controller
         // but on the food log's consumed_at column).
         $foodQuery = $applyScope(StaffFoodLog::query(), 'consumed_at');
 
-        // Orders placed within fixed Pakistan-time windows (hours are 24h).
+        // Orders placed in the two service windows after opening (hours are 24h):
+        // the first two hours of trade and the two after them. These move with the
+        // opening time — at 1PM–1AM that is 13:00–15:00 and 15:00–17:00.
         // Timestamps are stored in UTC, so convert to the restaurant's local zone first.
-        $afternoonOrders = $orders->filter(
-            fn ($o) => in_array((int) $o->created_at->copy()->setTimezone('Asia/Karachi')->format('H'), [14, 15], true)
+        $openingOrders = $orders->filter(
+            fn ($o) => in_array((int) $o->created_at->copy()->setTimezone('Asia/Karachi')->format('H'), [13, 14], true)
         );
-        $eveningOrders = $orders->filter(
-            fn ($o) => in_array((int) $o->created_at->copy()->setTimezone('Asia/Karachi')->format('H'), [16, 17], true)
+        $middayOrders = $orders->filter(
+            fn ($o) => in_array((int) $o->created_at->copy()->setTimezone('Asia/Karachi')->format('H'), [15, 16], true)
         );
 
         return response()->json([
@@ -83,13 +85,13 @@ class SalesController extends Controller
                 'orders' => $foodQuery->count(),
                 'total'  => (int) $foodQuery->sum('total_amount'),
             ],
-            'window_2_4' => [
-                'orders'  => $afternoonOrders->count(),
-                'revenue' => $afternoonOrders->sum('total'),
+            'window_1_3' => [
+                'orders'  => $openingOrders->count(),
+                'revenue' => $openingOrders->sum('total'),
             ],
-            'window_4_6' => [
-                'orders'  => $eveningOrders->count(),
-                'revenue' => $eveningOrders->sum('total'),
+            'window_3_5' => [
+                'orders'  => $middayOrders->count(),
+                'revenue' => $middayOrders->sum('total'),
             ],
         ]);
     }

@@ -23,9 +23,9 @@ use Carbon\Carbon;
  * Four knobs, all `settings` rows with the defaults below:
  *   late_fine_amount        200           — rupees per late day
  *   late_fine_grace_minutes 30            — minutes of lateness allowed for free
- *   late_fine_shift_start   14:00         — fallback shift start (staff.shift wins)
+ *   late_fine_shift_start   13:00         — fallback shift start (staff.shift wins)
  *   restaurant_timezone     Asia/Karachi  — the wall clock all of this is judged on
- * With the defaults, a 2PM shift is fined from 14:31 onward.
+ * With the defaults, a 1PM shift is fined from 13:31 onward.
  */
 class LateFineService
 {
@@ -33,7 +33,7 @@ class LateFineService
 
     public const DEFAULT_GRACE = 30;
 
-    public const DEFAULT_SHIFT_START = '14:00';
+    public const DEFAULT_SHIFT_START = '13:00';
 
     public const DEFAULT_TIMEZONE = 'Asia/Karachi';
 
@@ -60,8 +60,8 @@ class LateFineService
 
     /**
      * Shift start as minutes past midnight. Read off the staff member's own
-     * shift ("2PM–2AM" → 14:00, "5PM–2AM" → 17:00) so a 5PM starter isn't fined
-     * for a 2PM clock; shifts without a time in them ("Full Day", "Morning") and
+     * shift ("1PM–1AM" → 13:00, "5PM–1AM" → 17:00) so a 5PM starter isn't fined
+     * for a 1PM clock; shifts without a time in them ("Full Day", "Morning") and
      * staff with no shift set fall back to the `late_fine_shift_start` setting.
      */
     public function shiftStartMinutes(?string $shift): int

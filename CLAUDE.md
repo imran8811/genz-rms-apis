@@ -234,8 +234,8 @@ longer does:
 A check-in more than the grace period past the staff member's shift start costs a fine, written to
 `staff_fines` **as a side-effect of `POST /staff-attendance/bulk`** — there is nothing to run
 afterwards and no separate "apply fines" step. `App\Services\LateFineService` holds the whole rule;
-defaults are **Rs 200**, **30 minutes' grace**, fallback shift start **14:00**, so a 2PM shift is
-fined from **14:31**. All are `settings` rows (`late_fine_amount`, `late_fine_grace_minutes`,
+defaults are **Rs 200**, **30 minutes' grace**, fallback shift start **13:00**, so a 1PM shift is
+fined from **13:31**. All are `settings` rows (`late_fine_amount`, `late_fine_grace_minutes`,
 `late_fine_shift_start`, `restaurant_timezone`) writable through `PUT /settings`.
 - **Marking someone in *is* the check-in.** The counter marks each person as they arrive, so a
   record saved with no `check_in_time` is **stamped with the moment of marking** and judged on that
@@ -249,12 +249,18 @@ fined from **14:31**. All are `settings` rows (`late_fine_amount`, `late_fine_gr
   Flipping someone from `absent` to present later *is* a transition, and stamps that moment.
   A stored time also survives a save that doesn't echo it back, so a stale tab can't wipe it.
 - **⚠ The app runs on UTC** (`config/app.php`) while the restaurant is UTC+5. Never compare a raw
-  `now()` against a shift time — 2:31pm Karachi is 09:31 UTC, which reads as *early* and silently
+  `now()` against a shift time — 1:31pm Karachi is 08:31 UTC, which reads as *early* and silently
   fines nobody. `LateFineService::localNow()` is the only correct clock; it applies the
   `restaurant_timezone` setting (default `Asia/Karachi`).
-- **The shift start is per staff member:** parsed off `staff.shift` (`2PM–2AM` → 14:00, `5PM–2AM` →
-  17:00) so a 5PM starter isn't fined against a 2PM clock. Shifts with no time in them ("Full Day",
+- **The shift start is per staff member:** parsed off `staff.shift` (`1PM–1AM` → 13:00, `5PM–1AM` →
+  17:00) so a 5PM starter isn't fined against a 1PM clock. Shifts with no time in them ("Full Day",
   "Morning") and staff with no shift fall back to the setting.
+- **The house hours are 1PM–1AM** (was 2PM–2AM). Because the shift start is read off the
+  `staff.shift` *string*, retiming the restaurant is a data change as much as a code one: the seeded
+  defaults cover a fresh install, and `2026_10_02_000001_retime_restaurant_to_1pm_1am` rewrites the
+  old `2PM–2AM` / `5PM–2AM` rows, `settings.timing` and a `late_fine_shift_start` still on `14:00`
+  for a running one. A shift left on the old string would keep judging arrivals at 14:00 and
+  silently stop fining the first hour.
 - **`sync()` owns the `auto_late` row for a (staff, date) pair.** Re-saving the same day re-prices
   the fine instead of stacking a second one; correcting the check-in time back inside the grace
   period, clearing it, or marking the person `absent` **deletes** the fine. `source = manual` rows

@@ -26,7 +26,7 @@ return new class extends Migration {
             'address'                => 'Garden Town, Sher Shah Road, Multan',
             'phone'                  => '03 000-911-000',
             'whatsapp'               => '03 000-911-000',
-            'timing'                 => '02:00 PM - 2:00 AM',
+            'timing'                 => '01:00 PM - 1:00 AM',
             'currency'               => 'PKR',
             'tax_rate'               => '0',
             'default_delivery_charge'=> '100',
