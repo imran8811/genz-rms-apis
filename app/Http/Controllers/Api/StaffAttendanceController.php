@@ -46,7 +46,7 @@ class StaffAttendanceController extends Controller
         $now  = now();
 
         // Marking someone in *is* the check-in: when no time was typed, the
-        // moment they are marked in is their arrival time, and the fine is
+        // moment they are marked in is their arrival time, and lateness is
         // judged on that. Read off the restaurant's wall clock, never the app's
         // UTC `now()`. Back-filling an older day never stamps (it must not
         // borrow today's clock), and a typed time always wins — that is how a
@@ -54,17 +54,16 @@ class StaffAttendanceController extends Controller
         $localNow = $fines->localNow();
         $isToday  = $date === $localNow->toDateString();
         $staffIds = array_column($request->records, 'staff_id');
-        $roster   = Staff::whereIn('id', $staffIds)->get()->keyBy('id');
 
         // What this day already looks like. The stamp records the moment someone
         // is *marked in* — not the moment Save is pressed — so anyone already on
         // the sheet as present keeps whatever time they have (usually none, for
         // rows predating this feature) instead of being re-stamped, and re-saving
-        // an evening correction can't fine the whole roster for arriving at 17:45.
+        // an evening correction can't show the whole roster as arriving at 17:45.
         $existing = StaffAttendance::where('date', $date)->whereIn('staff_id', $staffIds)
             ->get()->keyBy('staff_id');
 
-        $records = array_map(function ($rec) use ($fines, $roster, $existing, $isToday, $localNow) {
+        $records = array_map(function ($rec) use ($fines, $existing, $isToday, $localNow) {
             $typed = ($rec['check_in_time'] ?? null) ?: null;
             $prev  = $existing->get($rec['staff_id']);
 
@@ -79,13 +78,16 @@ class StaffAttendanceController extends Controller
                 $stamp = $localNow->format('H:i');  // being marked in right now
                 $justMarkedIn = true;
             } else {
-                $stamp = null;                      // back-filling: type the time to fine
+                $stamp = null;                      // back-filling: type the time in
             }
 
             // A stamp past the grace period means they turned up late, so the
             // row should say so — 'present' was the counter saying "they came",
             // not "they were on time". An explicit Half Day or Absent stands.
-            $late = $fines->minutesLate($roster->get($rec['staff_id'])?->shift, $stamp);
+            // This is the *record* turning Late, not a charge: no fine is
+            // written here or anywhere else in this request. One shift, so the
+            // staff member doesn't come into it — hence no roster lookup.
+            $late = $fines->minutesLate($stamp);
             if ($justMarkedIn && $rec['status'] === 'present' && $late !== null && $late > $fines->graceMinutes()) {
                 $rec['status'] = 'late';
             }
@@ -108,26 +110,19 @@ class StaffAttendanceController extends Controller
             ['status', 'check_in_time', 'updated_at']
         );
 
-        // Late fines are a side-effect of marking attendance: whoever checked in
-        // more than the grace period past their shift start is fined for that
-        // day. `sync()` also *removes* a fine when a check-in time is corrected
-        // downward or cleared, so saving the same day twice never double-fines.
-        $applied = collect($records)
-            ->map(fn ($rec) => $roster->get($rec['staff_id'])
-                ? $fines->sync(
-                    $roster->get($rec['staff_id']),
-                    $date,
-                    $rec['check_in_time'],
-                    $rec['status'],
-                )
-                : null)
-            ->filter()
-            ->values()
-            ->map->load('staff:id,name,role');
-
+        // **Saving attendance charges nothing.** It used to write a late fine for
+        // everyone past the grace period (and delete the fine again when a time
+        // was corrected downward). Fines are now charged one at a time from the
+        // attendance screen's Add-fine link — `POST /staff-fines/late` — because
+        // whether a late arrival is actually worth Rs 200 is a judgement the
+        // counter makes, not one the clock makes. A save therefore neither
+        // creates nor removes a fine, and `fines` is **always empty**: it is kept
+        // on the response so a frontend that predates this change keeps working
+        // (it reported what the save had charged) rather than erroring on a
+        // missing key.
         return response()->json([
             'records' => StaffAttendance::where('date', $date)->whereIn('staff_id', $staffIds)->get(),
-            'fines'   => $applied,
+            'fines'   => [],
         ], 201);
     }
 

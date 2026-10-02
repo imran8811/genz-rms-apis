@@ -152,9 +152,15 @@ Route::middleware(['auth:sanctum', RestrictKitchenUser::class])->group(function 
     Route::post('staff-advances', [StaffAdvanceController::class, 'store']);
     Route::delete('staff-advances/{staffAdvance}', [StaffAdvanceController::class, 'destroy']);
 
-    // Staff Fines — late-arrival fines land here automatically when attendance
-    // is saved (see LateFineService); anything else is added by hand.
+    // Staff Fines — every row here is charged by a person. `staff-fines/late`
+    // is the attendance screen's Add/Remove link for a late arrival (keyed by
+    // staff + date, see LateFineService); `staff-fines` itself is anything else,
+    // added by hand from the Fines tab.
+    // The literal `rule` and `late` paths must stay above `{staffFine}`, or the
+    // bindings below would try to resolve them as fine ids.
     Route::get('staff-fines/rule', [StaffFineController::class, 'rule']);
+    Route::post('staff-fines/late', [StaffFineController::class, 'late']);
+    Route::delete('staff-fines/late', [StaffFineController::class, 'clearLate']);
     Route::get('staff-fines', [StaffFineController::class, 'index']);
     Route::post('staff-fines', [StaffFineController::class, 'store']);
     Route::put('staff-fines/{staffFine}', [StaffFineController::class, 'update']);

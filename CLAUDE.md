@@ -230,50 +230,85 @@ longer does:
 
 `GET /staff` returns active **+** inactive; `GET /staff?active=1` is the working roster.
 
-## Late fines (charged by marking attendance)
-A check-in more than the grace period past the staff member's shift start costs a fine, written to
-`staff_fines` **as a side-effect of `POST /staff-attendance/bulk`** — there is nothing to run
-afterwards and no separate "apply fines" step. `App\Services\LateFineService` holds the whole rule;
-defaults are **Rs 200**, **30 minutes' grace**, fallback shift start **13:00**, so a 1PM shift is
-fined from **13:31**. All are `settings` rows (`late_fine_amount`, `late_fine_grace_minutes`,
-`late_fine_shift_start`, `restaurant_timezone`) writable through `PUT /settings`.
+## Late fines (detected automatically, charged by hand)
+Lateness is worked out for you; **the charge is a decision someone makes.** `App\Services\LateFineService`
+holds the rule — defaults **Rs 200**, **30 minutes' grace**, fallback shift start **13:00**, so a 1PM
+shift reads as fineable from **13:31**. All are `settings` rows (`late_fine_amount`,
+`late_fine_grace_minutes`, `late_fine_shift_start`, `restaurant_timezone`) writable through
+`PUT /settings`.
+
+> **⚠ Saving attendance charges nothing.** It used to: `POST /staff-attendance/bulk` wrote a fine for
+> everyone past the grace period and deleted it again when a time was corrected downward. That is
+> gone. A save now neither creates nor removes a fine, and `bulkStore` does not touch `staff_fines`
+> at all. Whether a late arrival is actually worth Rs 200 — traffic, an errand, a shift swapped by
+> phone — is context the counter has and the clock doesn't. `test_saving_attendance_charges_no_fine`
+> pins it so the old behaviour cannot drift back in.
+
+- **The two endpoints that charge it.** Both are keyed by **(staff, date)** rather than by fine id,
+  so the attendance screen can act on the row it is already showing:
+  - `POST /staff-fines/late` `{ staff_id, fine_date }` — the Add-fine link. Prices the fine from the
+    **stored** attendance row, never from the request, so a stale tab cannot talk it into a different
+    number. Idempotent: pressing it twice re-prices rather than stacking a second fine.
+    `422` when the day has no attendance saved (there is no arrival time to charge against — the
+    frontend's Add-fine link saves the sheet first so it doesn't hit this), when the person is marked
+    `absent` (they can't be late for a day they missed), or when `late_fine_amount` is 0.
+  - `DELETE /staff-fines/late?staff_id=&fine_date=` — the Remove link. `404` when nothing is charged,
+    so pressing Remove on a row another terminal already cleared says so instead of reporting a
+    removal that never happened. **Manual fines are never touched** by either.
+  - The literal `rule` and `late` paths sit **above** `staff-fines/{staffFine}` in `routes/api.php`,
+    or route binding would try to resolve them as fine ids.
+- **`StaffFine::SOURCE_LATE` is the string `auto_late`.** Historical: it dates from when attendance
+  marking wrote these itself. The column holds it on every past row and renaming it would rewrite
+  that history for no behavioural gain, so read it as "the late one", not as "the automatic one".
+  `SOURCE_MANUAL` is everything else.
+- **Detection is still automatic, and still matters.** `minutesLate()` drives the "31 min late" the
+  attendance row shows, and **the attendance row still flips itself to `late`** on a late stamp.
+  That is a statement about the day, not a charge — the status and the money are now separate
+  decisions, and only the second one costs anything.
 - **Marking someone in *is* the check-in.** The counter marks each person as they arrive, so a
-  record saved with no `check_in_time` is **stamped with the moment of marking** and judged on that
-  — nobody types times in normal use. A typed time always wins (that's how a wrong stamp is fixed),
-  `absent` rows are never stamped, and **past dates are never stamped** (back-filling last week must
-  not borrow today's clock), so retrospective fines need the time typed in.
+  record saved with no `check_in_time` is **stamped with the moment of marking** — nobody types
+  times in normal use. A typed time always wins (that's how a wrong stamp is fixed), `absent` rows
+  are never stamped, and **past dates are never stamped** (back-filling last week must not borrow
+  today's clock), so a retrospective fine needs the time typed in first.
 - **The stamp marks a transition, not a save.** Only someone *not already marked in* is stamped:
   a row already on the sheet as present/late/half_day keeps its time (even a null one, as every row
-  saved before this feature has), so pressing Save again at 17:45 can't re-stamp the roster and fine
-  everybody. That regression is pinned by `test_re_saving_does_not_stamp_someone_already_marked_in`.
-  Flipping someone from `absent` to present later *is* a transition, and stamps that moment.
-  A stored time also survives a save that doesn't echo it back, so a stale tab can't wipe it.
+  saved before this feature has), so pressing Save again at 17:45 can't re-stamp the roster. That
+  regression is pinned by `test_re_saving_does_not_stamp_someone_already_marked_in`. Flipping someone
+  from `absent` to present later *is* a transition, and stamps that moment. A stored time also
+  survives a save that doesn't echo it back, so a stale tab can't wipe it.
 - **⚠ The app runs on UTC** (`config/app.php`) while the restaurant is UTC+5. Never compare a raw
-  `now()` against a shift time — 1:31pm Karachi is 08:31 UTC, which reads as *early* and silently
-  fines nobody. `LateFineService::localNow()` is the only correct clock; it applies the
+  `now()` against a shift time — 1:31pm Karachi is 08:31 UTC, which reads as *early*, and nobody
+  would ever look late. `LateFineService::localNow()` is the only correct clock; it applies the
   `restaurant_timezone` setting (default `Asia/Karachi`).
-- **The shift start is per staff member:** parsed off `staff.shift` (`1PM–1AM` → 13:00, `5PM–1AM` →
-  17:00) so a 5PM starter isn't fined against a 1PM clock. Shifts with no time in them ("Full Day",
-  "Morning") and staff with no shift fall back to the setting.
-- **The house hours are 1PM–1AM** (was 2PM–2AM). Because the shift start is read off the
-  `staff.shift` *string*, retiming the restaurant is a data change as much as a code one: the seeded
-  defaults cover a fresh install, and `2026_10_02_000001_retime_restaurant_to_1pm_1am` rewrites the
-  old `2PM–2AM` / `5PM–2AM` rows, `settings.timing` and a `late_fine_shift_start` still on `14:00`
-  for a running one. A shift left on the old string would keep judging arrivals at 14:00 and
-  silently stop fining the first hour.
-- **`sync()` owns the `auto_late` row for a (staff, date) pair.** Re-saving the same day re-prices
-  the fine instead of stacking a second one; correcting the check-in time back inside the grace
-  period, clearing it, or marking the person `absent` **deletes** the fine. `source = manual` rows
-  are never touched by the sync.
-- `POST /staff-attendance/bulk` now answers `{ records, fines }` — `fines` is what that save just
-  charged, so the frontend can show it. (It used to return the bare records array.)
+- **One shift, 1PM–1AM, and the shift start is not per staff member.** `LateFineService::shiftStart()`
+  reads the `late_fine_shift_start` setting and that is the whole answer — everyone is judged against
+  the same clock. It **used to** parse a time out of the `staff.shift` string (`5PM–1AM` → 17:00) to
+  support a second shift; there is no second shift, so that parsing is gone along with the
+  `?string $shift` parameter on `shiftStart()`/`minutesLate()`.
+  - `staff.shift` **remains** as a descriptive label on the staff record, and is deliberately *not*
+    read by the fine rule: a typo or a stale string on one person's row must not change what they are
+    judged against. `2026_10_02_000002_collapse_staff_to_the_single_shift` brings every row onto
+    `1PM–1AM` so the staff list can't show a shift that doesn't exist. Its `down()` is a documented
+    no-op — the per-staff shifts aren't recorded anywhere else, so there is nothing to restore.
+  - `GET /staff-fines/rule` still calls the field `default_shift_start`, from when staff could have
+    their own. With one shift it simply *is* the shift start.
+- **The house hours are 1PM–1AM** (was 2PM–2AM). Retiming the restaurant is a data change as much as
+  a code one: the seeded defaults cover a fresh install, and
+  `2026_10_02_000001_retime_restaurant_to_1pm_1am` rewrites `settings.timing`, a
+  `late_fine_shift_start` still on `14:00`, and the old `2PM–2AM` / `5PM–2AM` staff rows for a
+  running one. Changing the hours again means changing `late_fine_shift_start`, `settings.timing` and
+  the frontend's `THE_SHIFT` label.
+- `POST /staff-attendance/bulk` answers `{ records, fines }`, where **`fines` is always `[]`**. The
+  key is kept so a frontend that predates this change (it listed what the save had charged) keeps
+  working rather than erroring on a missing key.
 - CRUD: `GET/POST /staff-fines`, `PUT|DELETE /staff-fines/{id}`, plus `GET /staff-fines/rule`
-  (amount + grace + fallback shift start) so the UI quotes the same numbers the sync charges.
-  `GET` filters: `month=YYYY-MM` (on `fine_date`), `staff_id`, `source`, `from`/`to`.
+  (amount + grace + fallback shift start) so the UI quotes the same numbers a charge will use.
+  `GET` filters: `month=YYYY-MM` (on `fine_date`), `staff_id`, `source`, `from`/`to` — the attendance
+  screen uses `from`/`to` + `source` to load one day's late fines.
 - **Payroll:** fines are deducted in the month their `fine_date` falls in (no carry-forward as with
   advances) — `fine_deduct` on every `GET /staff-payroll` row, inside `total_deductions`.
-- Editing an `auto_late` fine by hand is allowed but not durable: the next save of that day's
-  attendance overwrites it. The real fix is correcting the check-in time.
+- Editing a late fine by hand now **sticks** (nothing rewrites it on the next attendance save), but
+  pressing Add fine on that day again re-prices it from the rule.
 
 **Staff food entries are admin-delete-only:** anyone logged in may add a `staff_food_logs` entry
 (the counter logs meals as they happen), but `DELETE /staff-food/{id}` `403`s for non-admins —

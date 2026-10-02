@@ -17,8 +17,9 @@ return new class extends Migration
             $table->foreignId('staff_id')->constrained('staff')->cascadeOnDelete();
             $table->unsignedInteger('amount');
             $table->date('fine_date');
-            // 'auto_late' rows are written by attendance marking and re-synced on
-            // every save; 'manual' rows are only ever touched by a human.
+            // 'auto_late' is the late-arrival fine, 'manual' anything else. Both
+            // are charged by hand — the name dates from when attendance marking
+            // wrote these by itself. See App\Models\StaffFine::SOURCE_LATE.
             $table->enum('source', ['auto_late', 'manual'])->default('manual');
             $table->unsignedSmallInteger('minutes_late')->nullable();
             $table->string('reason', 300)->nullable();

@@ -10,22 +10,31 @@ use Carbon\Carbon;
 /**
  * Late-arrival fines.
  *
- * Marking attendance is the only trigger: when a check-in time is saved that is
- * more than the grace period past the staff member's shift start, a fine is
- * written against that staff/date. Nothing else creates one, and nothing needs
- * to be run afterwards.
+ * **Nothing here fires by itself.** The service works out who *looks* late and
+ * what a late fine would cost, but a fine is only ever written when someone at
+ * the counter asks for it — `charge()` from the Add-fine link on the attendance
+ * screen, `clear()` from Remove. Marking attendance used to charge these
+ * automatically; it no longer touches fines at all, so a save can neither
+ * create nor delete one. (Rationale: whether a late arrival is actually worth
+ * Rs 200 is a judgement about the person and the day — traffic, an errand, a
+ * shift swapped by phone — and the counter has that context, the clock doesn't.)
  *
- * The rule is deliberately re-runnable. `sync()` owns the `auto_late` row for a
- * (staff, date) pair completely: fixing a mis-typed check-in time re-prices the
- * fine, and clearing it (or marking the person absent) removes the fine, so
- * re-saving attendance can never stack duplicates on someone.
+ * What is still automatic is *detection*: `minutesLate()` drives the "45 min
+ * late" the attendance row shows, and the attendance row still flips itself to
+ * `late` on a late stamp. That is a statement about the day, not a charge.
+ *
+ * **The restaurant runs one shift, 1PM–1AM.** Everyone is judged against the
+ * same start, so there is no per-person shift arithmetic here: `shiftStart()` is
+ * the whole answer. `staff.shift` is a descriptive label on the staff record and
+ * is deliberately *not* read by this service — a typo or a stale string on one
+ * person's row cannot change what they are judged against.
  *
  * Four knobs, all `settings` rows with the defaults below:
- *   late_fine_amount        200           — rupees per late day
- *   late_fine_grace_minutes 30            — minutes of lateness allowed for free
- *   late_fine_shift_start   13:00         — fallback shift start (staff.shift wins)
+ *   late_fine_amount        200           — rupees a late day costs when charged
+ *   late_fine_grace_minutes 30            — lateness below which no fine is suggested
+ *   late_fine_shift_start   13:00         — when the shift starts, for everyone
  *   restaurant_timezone     Asia/Karachi  — the wall clock all of this is judged on
- * With the defaults, a 1PM shift is fined from 13:31 onward.
+ * With the defaults, a fine is suggested from 13:31 onward.
  */
 class LateFineService
 {
@@ -50,7 +59,7 @@ class LateFineService
     /**
      * The restaurant's wall clock. **The app itself runs on UTC** (`config/app.php`),
      * so `now()` is five hours behind the counter in Karachi — stamping a raw
-     * `now()` would record a 2:31 PM arrival as 09:31 and no one would ever be
+     * `now()` would record a 1:31 PM arrival as 08:31 and nobody would ever look
      * late. Everything that compares against a shift time must go through here.
      */
     public function localNow(): Carbon
@@ -59,23 +68,14 @@ class LateFineService
     }
 
     /**
-     * Shift start as minutes past midnight. Read off the staff member's own
-     * shift ("1PM–1AM" → 13:00, "5PM–1AM" → 17:00) so a 5PM starter isn't fined
-     * for a 1PM clock; shifts without a time in them ("Full Day", "Morning") and
-     * staff with no shift set fall back to the `late_fine_shift_start` setting.
+     * When the shift starts, as minutes past midnight — the same for everyone,
+     * from the `late_fine_shift_start` setting. One shift, so one answer; this
+     * used to parse a per-staff shift string ("5PM–1AM" → 17:00) and no longer
+     * does. A setting with no usable time in it falls back to the default
+     * rather than returning something that would make nobody ever look late.
      */
-    public function shiftStartMinutes(?string $shift): int
+    public function shiftStart(): int
     {
-        if ($shift && preg_match('/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i', $shift, $m)) {
-            $hour   = (int) $m[1] % 12;
-            $minute = isset($m[2]) && $m[2] !== '' ? (int) $m[2] : 0;
-            if (strtolower($m[3]) === 'pm') {
-                $hour += 12;
-            }
-
-            return $hour * 60 + $minute;
-        }
-
         return $this->toMinutes((string) Setting::get('late_fine_shift_start', self::DEFAULT_SHIFT_START))
             ?? (int) $this->toMinutes(self::DEFAULT_SHIFT_START);
     }
@@ -84,49 +84,57 @@ class LateFineService
      * Minutes past the shift start, or null when there is no usable check-in
      * time. Negative (early) values are returned as 0 — early is never late.
      */
-    public function minutesLate(?string $shift, ?string $checkIn): ?int
+    public function minutesLate(?string $checkIn): ?int
     {
         $checkInMinutes = $this->toMinutes((string) $checkIn);
         if ($checkInMinutes === null) {
             return null;
         }
 
-        return max(0, $checkInMinutes - $this->shiftStartMinutes($shift));
+        return max(0, $checkInMinutes - $this->shiftStart());
     }
 
     /**
-     * Bring the automatic fine for one staff member on one date in line with the
-     * attendance just saved. Returns the fine if there is one, null if there
-     * isn't (having removed a stale one first, if it existed).
+     * The late fine already standing against one staff member on one date, if
+     * there is one. At most one exists per (staff, date): `charge()` re-prices
+     * the row it finds rather than adding a second.
      */
-    public function sync(Staff $staff, string $date, ?string $checkIn, string $status): ?StaffFine
+    public function lateFine(Staff $staff, string $date): ?StaffFine
     {
-        $existing = StaffFine::where('staff_id', $staff->id)
+        return StaffFine::where('staff_id', $staff->id)
             ->whereDate('fine_date', $date)
-            ->where('source', 'auto_late')
+            ->where('source', StaffFine::SOURCE_LATE)
             ->first();
+    }
 
-        // Someone who never turned up can't be fined for turning up late.
-        $late = $status === 'absent' ? null : $this->minutesLate($staff->shift, $checkIn);
-
-        if ($late === null || $late <= $this->graceMinutes() || $this->amount() <= 0) {
-            $existing?->delete();
-
-            return null;
-        }
+    /**
+     * Charge the late fine for one staff member on one date, at the configured
+     * amount, with the lateness worked out from `$checkIn`. Called only from an
+     * explicit request. Charging a day that already has one re-prices it
+     * instead of stacking a second, so the link is safe to press twice.
+     *
+     * A fine can be charged with no check-in time on record (someone turned up
+     * late and the time was never typed): the amount stands, and the reason just
+     * says "Late arrival" because there is no arithmetic to quote.
+     */
+    public function charge(Staff $staff, string $date, ?string $checkIn): StaffFine
+    {
+        $late = $this->minutesLate($checkIn);
 
         $attributes = [
             'amount'       => $this->amount(),
-            'minutes_late' => min(65535, $late),
-            'reason'       => sprintf(
-                'Late by %d min (checked in %s, shift starts %s)',
-                $late,
-                substr((string) $checkIn, 0, 5),
-                $this->formatMinutes($this->shiftStartMinutes($staff->shift))
-            ),
+            'minutes_late' => $late === null ? null : min(65535, $late),
+            'reason'       => $late === null || $late === 0
+                ? 'Late arrival'
+                : sprintf(
+                    'Late by %d min (checked in %s, shift starts %s)',
+                    $late,
+                    substr((string) $checkIn, 0, 5),
+                    $this->formatMinutes($this->shiftStart())
+                ),
         ];
 
-        if ($existing) {
+        if ($existing = $this->lateFine($staff, $date)) {
             $existing->update($attributes);
 
             return $existing;
@@ -135,8 +143,20 @@ class LateFineService
         return StaffFine::create($attributes + [
             'staff_id'  => $staff->id,
             'fine_date' => $date,
-            'source'    => 'auto_late',
+            'source'    => StaffFine::SOURCE_LATE,
         ]);
+    }
+
+    /**
+     * Drop the late fine for one staff member on one date. Returns false when
+     * there was nothing to drop, so the caller can say so rather than reporting
+     * a removal that never happened. Manual fines are never touched.
+     */
+    public function clear(Staff $staff, string $date): bool
+    {
+        $fine = $this->lateFine($staff, $date);
+
+        return $fine !== null && $fine->delete() === true;
     }
 
     private function toMinutes(?string $time): ?int
