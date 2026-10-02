@@ -245,10 +245,23 @@ shift reads as fineable from **13:31**. All are `settings` rows (`late_fine_amou
 > pins it so the old behaviour cannot drift back in.
 
 - **The two endpoints that charge it.** Both are keyed by **(staff, date)** rather than by fine id,
-  so the attendance screen can act on the row it is already showing:
+  so the attendance screen can act on the row it is already showing. The frontend calls them
+  **only from its Save button** — the Add fine / Remove links stage a change on screen and the save
+  applies attendance first, then the fines (see `genz-rms-fe` → "Charging a late fine"):
   - `POST /staff-fines/late` `{ staff_id, fine_date }` — the Add-fine link. Prices the fine from the
     **stored** attendance row, never from the request, so a stale tab cannot talk it into a different
     number. Idempotent: pressing it twice re-prices rather than stacking a second fine.
+    - ⚠ **The idempotency needs the lock, and it was once missing.** `charge()` finds-then-writes; it
+      now does so inside a `DB::transaction` holding `lockForUpdate()` on the (staff, date) row.
+      Without it two charges racing (a double click, a retried request, two terminals) both read "no
+      fine yet" and both inserted — fining someone 400 for one late morning. The locking read also
+      gap-locks when it matches nothing, so the second waits and finds the first one's row.
+      `lateFine()` matches `fine_date` with `where`, **not `whereDate`**, so the
+      `['staff_id', 'fine_date']` index is usable and that gap lock stays narrow.
+      Pinned by `test_charging_the_same_person_and_day_twice_never_doubles`.
+      `2026_10_02_000003_dedupe_double_charged_late_fines` removes the duplicates already written
+      (keeps the earliest of each group; `auto_late` only — two manual fines in a day are two real
+      fines, which is also why there is no unique index).
     `422` when the day has no attendance saved (there is no arrival time to charge against — the
     frontend's Add-fine link saves the sheet first so it doesn't hit this), when the person is marked
     `absent` (they can't be late for a day they missed), or when `late_fine_amount` is 0.
@@ -261,10 +274,18 @@ shift reads as fineable from **13:31**. All are `settings` rows (`late_fine_amou
   marking wrote these itself. The column holds it on every past row and renaming it would rewrite
   that history for no behavioural gain, so read it as "the late one", not as "the automatic one".
   `SOURCE_MANUAL` is everything else.
-- **Detection is still automatic, and still matters.** `minutesLate()` drives the "31 min late" the
-  attendance row shows, and **the attendance row still flips itself to `late`** on a late stamp.
-  That is a statement about the day, not a charge — the status and the money are now separate
-  decisions, and only the second one costs anything.
+- **There is no `late` attendance status.** `staff_attendance.status` is `present` / `absent` /
+  `half_day`. A stamp past the grace period used to rewrite `present` → `late`, which only restated
+  what `check_in_time` already says and left **two** controllers having to add the buckets back
+  together (`whereIn('status', ['present', 'late'])` in the summary and in payroll). Saving now takes
+  the status exactly as the counter set it.
+  - `2026_10_02_000004_drop_late_attendance_status` converts every existing `late` row to `present`
+    and narrows the enum. **Arrival times are untouched**, so who was late and by how much is still
+    on the row. The enum DDL is MySQL-only and skipped elsewhere — sqlite (the test driver) models an
+    enum as a check constraint that can't be altered in place, and the data conversion is the part
+    that matters on every driver. `down()` widens the enum but cannot say which rows were `late`.
+  - `minutesLate()` is still what prices a fine's `minutes_late` and reason text; it no longer
+    decides anything about the status.
 - **Marking someone in *is* the check-in.** The counter marks each person as they arrive, so a
   record saved with no `check_in_time` is **stamped with the moment of marking** — nobody types
   times in normal use. A typed time always wins (that's how a wrong stamp is fixed), `absent` rows

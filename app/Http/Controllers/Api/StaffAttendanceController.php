@@ -38,7 +38,7 @@ class StaffAttendanceController extends Controller
             'date'                        => 'required|date',
             'records'                     => 'required|array|min:1',
             'records.*.staff_id'          => 'required|exists:staff,id',
-            'records.*.status'            => 'required|in:present,absent,half_day,late',
+            'records.*.status'            => 'required|in:present,absent,half_day',
             'records.*.check_in_time'     => 'nullable|date_format:H:i,H:i:s',
         ]);
 
@@ -63,11 +63,15 @@ class StaffAttendanceController extends Controller
         $existing = StaffAttendance::where('date', $date)->whereIn('staff_id', $staffIds)
             ->get()->keyBy('staff_id');
 
-        $records = array_map(function ($rec) use ($fines, $existing, $isToday, $localNow) {
+        // The status is taken exactly as the counter set it. There is **no
+        // `late` status any more**: a stamp past the grace period used to rewrite
+        // `present` to `late`, which only ever restated what `check_in_time`
+        // already says, and left payroll and the summary having to add the two
+        // buckets back together. Who was late is read off the arrival time.
+        $records = array_map(function ($rec) use ($existing, $isToday, $localNow) {
             $typed = ($rec['check_in_time'] ?? null) ?: null;
             $prev  = $existing->get($rec['staff_id']);
 
-            $justMarkedIn = false;
             if ($rec['status'] === 'absent') {
                 $stamp = null;                      // never turned up: no arrival time
             } elseif ($typed) {
@@ -76,20 +80,8 @@ class StaffAttendanceController extends Controller
                 $stamp = $prev->check_in_time;      // already marked in earlier — leave it be
             } elseif ($isToday) {
                 $stamp = $localNow->format('H:i');  // being marked in right now
-                $justMarkedIn = true;
             } else {
                 $stamp = null;                      // back-filling: type the time in
-            }
-
-            // A stamp past the grace period means they turned up late, so the
-            // row should say so — 'present' was the counter saying "they came",
-            // not "they were on time". An explicit Half Day or Absent stands.
-            // This is the *record* turning Late, not a charge: no fine is
-            // written here or anywhere else in this request. One shift, so the
-            // staff member doesn't come into it — hence no roster lookup.
-            $late = $fines->minutesLate($stamp);
-            if ($justMarkedIn && $rec['status'] === 'present' && $late !== null && $late > $fines->graceMinutes()) {
-                $rec['status'] = 'late';
             }
 
             return [...$rec, 'check_in_time' => $stamp];
@@ -150,10 +142,11 @@ class StaffAttendanceController extends Controller
                 'staff_id'    => $staff->id,
                 'staff_name'  => $staff->name,
                 'role'        => $staff->role,
-                'present'     => $records->whereIn('status', ['present', 'late'])->count(),
+                // `present` no longer has to union in `late`, and the `late`
+                // count is gone with the status — nothing consumed it.
+                'present'     => $records->where('status', 'present')->count(),
                 'absent'      => $records->where('status', 'absent')->count(),
                 'half_day'    => $records->where('status', 'half_day')->count(),
-                'late'        => $records->where('status', 'late')->count(),
                 'total_logged'=> $records->count(),
             ];
         });

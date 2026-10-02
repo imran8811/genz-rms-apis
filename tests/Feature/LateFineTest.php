@@ -13,16 +13,21 @@ use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 
 /**
  * Late fines: **detected automatically, charged by hand.**
  *
  * The rule works out that someone is 45 minutes late and what that would cost
- * (Rs 200 past 30 minutes' grace), and the attendance row flips itself to Late.
- * No fine is written until someone presses Add fine. The first group of tests
- * below pins that saving attendance charges nothing — that is the behaviour this
- * module used to have, and must not drift back into.
+ * (Rs 200 past 30 minutes' grace). No fine is written until someone presses Add
+ * fine. The first group of tests below pins that saving attendance charges
+ * nothing — that is the behaviour this module used to have, and must not drift
+ * back into.
+ *
+ * Saving also no longer touches the **status**: there is no `late` status, and a
+ * row marked `present` stays `present` however late the stamp is. The arrival
+ * time is the record of lateness.
  */
 class LateFineTest extends TestCase
 {
@@ -104,8 +109,9 @@ class LateFineTest extends TestCase
     // ── Saving attendance charges nothing ────────────────────────────────────
 
     /**
-     * The headline rule. Someone marked in two hours late is plainly late, the
-     * row says so, and the sheet still costs them nothing until it is charged.
+     * The headline rule. Someone marked in two hours late stays `present` — the
+     * 15:00 stamp is the record of it — and the sheet costs them nothing until
+     * it is charged.
      */
     public function test_saving_attendance_charges_no_fine(): void
     {
@@ -117,7 +123,7 @@ class LateFineTest extends TestCase
         ]);
 
         $this->assertCheckIn('15:00', $staff);
-        $this->assertSame('late', StaffAttendance::where('staff_id', $staff->id)->value('status'));
+        $this->assertSame('present', StaffAttendance::where('staff_id', $staff->id)->value('status'));
         $this->assertNotFined($staff);
     }
 
@@ -242,6 +248,27 @@ class LateFineTest extends TestCase
     }
 
     /**
+     * `staff_id` must come back **typed as an integer**, not as whatever the
+     * database driver felt like. The attendance screen matches a fine to its row
+     * with `f.staff_id === s.id`; a string fails that match silently, so someone
+     * already fined still gets offered an "Add fine" link and a second press
+     * charges them twice. This is a one-line cast guarding a money bug.
+     */
+    public function test_a_fine_serialises_its_staff_id_as_an_integer(): void
+    {
+        $staff = $this->staff();
+        $this->bulkStore('2026-08-15', [
+            ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => '15:00'],
+        ]);
+
+        $response = $this->addFine($staff, '2026-08-15');
+        $body     = json_decode($response->getContent(), true);
+
+        $this->assertIsInt($body['staff_id']);
+        $this->assertSame($staff->id, $body['staff_id']);
+    }
+
+    /**
      * The lateness is read off the saved attendance row, so a stale tab cannot
      * talk the fine into a different number by sending its own time.
      */
@@ -257,6 +284,26 @@ class LateFineTest extends TestCase
         app(StaffFineController::class)->late($request, $this->fines);
 
         $this->assertSame(60, StaffFine::where('staff_id', $staff->id)->value('minutes_late'));
+    }
+
+    /**
+     * Pressing Add fine twice on the same person and day must leave **one**
+     * fine, at one amount. This is money against a salary, so the duplicate is
+     * not a cosmetic bug — it is charging someone 400 for one late morning.
+     */
+    public function test_charging_the_same_person_and_day_twice_never_doubles(): void
+    {
+        $staff = $this->staff();
+        $this->bulkStore('2026-08-15', [
+            ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => '15:00'],
+        ]);
+
+        $this->addFine($staff, '2026-08-15');
+        $this->addFine($staff, '2026-08-15');
+        $this->addFine($staff, '2026-08-15');
+
+        $this->assertSame(1, StaffFine::where('staff_id', $staff->id)->count());
+        $this->assertSame(200, (int) StaffFine::where('staff_id', $staff->id)->sum('amount'));
     }
 
     /** The link is safe to press twice — and re-prices if the time was corrected. */
@@ -401,7 +448,7 @@ class LateFineTest extends TestCase
     /**
      * The counter marks each person as they walk in, so marking *is* the
      * check-in — a save with no time typed is stamped with the moment of
-     * marking. The row turns Late on that; the money is a separate decision.
+     * marking. The status is left exactly as it was set.
      */
     public function test_marking_someone_in_stamps_the_time_of_marking(): void
     {
@@ -413,11 +460,11 @@ class LateFineTest extends TestCase
         ]);
 
         $this->assertCheckIn('13:47', $staff);
-        $this->assertSame('late', StaffAttendance::where('staff_id', $staff->id)->value('status'));
+        $this->assertSame('present', StaffAttendance::where('staff_id', $staff->id)->value('status'));
         $this->assertNotFined($staff);
     }
 
-    public function test_an_explicit_half_day_is_not_rewritten_to_late(): void
+    public function test_a_half_day_keeps_its_status(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-08-15 13:47:00', self::TZ));
         $staff = $this->staff();
@@ -429,17 +476,36 @@ class LateFineTest extends TestCase
         $this->assertSame('half_day', StaffAttendance::where('staff_id', $staff->id)->value('status'));
     }
 
-    public function test_marking_someone_in_within_the_grace_period_stays_present(): void
+    /**
+     * However late the stamp is, `present` stays `present`. A stamp past the
+     * grace period used to rewrite the status to `late`; there is no such status
+     * now, and the arrival time says everything it said.
+     */
+    public function test_the_status_is_never_rewritten_however_late_the_stamp(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-08-15 13:20:00', self::TZ));
+        foreach (['13:20' => '13:20', '19:30' => '19:30'] as $clock => $expected) {
+            Carbon::setTestNow(Carbon::parse("2026-08-15 {$clock}:00", self::TZ));
+            $staff = $this->staff();
+
+            $this->bulkStore('2026-08-15', [
+                ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => null],
+            ]);
+
+            $this->assertCheckIn($expected, $staff);
+            $this->assertSame('present', StaffAttendance::where('staff_id', $staff->id)->value('status'));
+        }
+    }
+
+    /** `late` is not a status the API will accept any more. */
+    public function test_a_late_status_is_rejected(): void
+    {
         $staff = $this->staff();
 
-        $this->bulkStore('2026-08-15', [
-            ['staff_id' => $staff->id, 'status' => 'present', 'check_in_time' => null],
-        ]);
+        $this->expectException(ValidationException::class);
 
-        $this->assertCheckIn('13:20', $staff);
-        $this->assertSame('present', StaffAttendance::where('staff_id', $staff->id)->value('status'));
+        $this->bulkStore('2026-08-15', [
+            ['staff_id' => $staff->id, 'status' => 'late', 'check_in_time' => '15:00'],
+        ]);
     }
 
     public function test_an_absent_row_is_not_stamped(): void
@@ -519,7 +585,7 @@ class LateFineTest extends TestCase
         ]);
 
         $this->assertCheckIn('17:45', $staff);
-        $this->assertSame('late', StaffAttendance::where('staff_id', $staff->id)->value('status'));
+        $this->assertSame('present', StaffAttendance::where('staff_id', $staff->id)->value('status'));
     }
 
     /** A stored time must survive a save that doesn't echo it back. */

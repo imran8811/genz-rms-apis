@@ -89,7 +89,9 @@ class StaffPayrollController extends Controller
                 'is_active'       => (bool) $staff->is_active,
                 'base_salary'     => $base,
                 'daily_rate'      => (int) round($dailyRate),
-                'present_days'    => $attendance->whereIn('status', ['present', 'late'])->count(),
+                // Was `['present', 'late']` — a late arrival was always a present
+                // day, and `late` is no longer a status.
+                'present_days'    => $attendance->where('status', 'present')->count(),
                 'absent_days'     => $absentDays,
                 'half_days'       => $halfDays,
                 'absent_deduct'   => $absentDeduct,

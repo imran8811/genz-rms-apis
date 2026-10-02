@@ -34,8 +34,18 @@ class StaffFine extends Model
 
     protected $fillable = ['staff_id', 'amount', 'fine_date', 'source', 'minutes_late', 'reason', 'notes'];
 
+    /**
+     * `staff_id` is cast on purpose. Without it the column's type in JSON is
+     * whatever the database driver hands back — a string under some PDO
+     * configurations — and the attendance screen matches a fine to its row with
+     * `f.staff_id === s.id`. A string there silently fails that match, so a
+     * person who *has* been fined still shows an "Add fine" link, and pressing
+     * it charges them again. Anything the frontend compares by identity rather
+     * than indexes by needs to arrive typed.
+     */
     protected $casts = [
         'fine_date'    => 'date',
+        'staff_id'     => 'integer',
         'amount'       => 'integer',
         'minutes_late' => 'integer',
     ];
