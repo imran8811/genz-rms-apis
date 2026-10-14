@@ -163,7 +163,7 @@ Endpoints:
 foodpanda_orders }], next_before }`. `sales` is everything **except** `source = foodpanda`, the same
 split `summary` uses, and the day bucket is the same one `summary?date=` reads. Keyset-paged on the
 date: pass `next_before` back as `before`; `null` means no older days. Days with no completed orders
-are omitted. Off the kitchen allowlist. Covered by `tests/Feature/DailySalesTest.php`.
+are omitted. **Admin only** (403 for `user` and `kitchen`). Covered by `tests/Feature/DailySalesTest.php`.
 
 ## Stock: derived from purchases and sales, never typed
 `inventory_items.current_stock` used to be moved **only** by the manual adjust button — Purchasing

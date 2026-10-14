@@ -133,6 +133,11 @@ class SalesController extends Controller
      */
     public function daily(Request $request): JsonResponse
     {
+        // Admins only: day-by-day takings are the owner's figures, not the counter's.
+        if (! $request->user()?->isAdmin()) {
+            return response()->json(['message' => 'Only an admin can view daily sales.'], 403);
+        }
+
         $validated = $request->validate([
             'before' => ['nullable', 'date_format:Y-m-d'],
             'limit'  => ['nullable', 'integer', 'min:1', 'max:100'],

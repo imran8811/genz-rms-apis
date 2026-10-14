@@ -33,11 +33,11 @@ class DailySalesTest extends TestCase
         $order->forceFill(['created_at' => $at])->save();
     }
 
-    private function user(): User
+    private function admin(): User
     {
         return User::firstOrCreate(
-            ['email' => 'desk@example.test'],
-            ['name' => 'Front desk', 'password' => 'secret1234', 'role' => 'user'],
+            ['email' => 'owner@example.test'],
+            ['name' => 'Owner', 'password' => 'secret1234', 'role' => 'admin'],
         );
     }
 
@@ -49,7 +49,7 @@ class DailySalesTest extends TestCase
         $this->order('2026-10-12 13:00:00', 'pos', 9999, 'cancelled');
         $this->order('2026-10-10 10:00:00', 'foodpanda', 300);
 
-        $this->actingAs($this->user())
+        $this->actingAs($this->admin())
             ->getJson('/api/sales/daily')
             ->assertOk()
             ->assertExactJson([
@@ -61,13 +61,24 @@ class DailySalesTest extends TestCase
             ]);
     }
 
+    public function test_is_admin_only(): void
+    {
+        foreach (['user', 'kitchen'] as $role) {
+            $login = User::create([
+                'name' => ucfirst($role), 'email' => "$role@example.test",
+                'password' => 'secret1234', 'role' => $role,
+            ]);
+            $this->actingAs($login)->getJson('/api/sales/daily')->assertForbidden();
+        }
+    }
+
     public function test_pages_back_through_history_with_before(): void
     {
         foreach (['2026-10-01', '2026-10-02', '2026-10-03'] as $d) {
             $this->order("$d 10:00:00", 'pos', 100);
         }
 
-        $first = $this->actingAs($this->user())
+        $first = $this->actingAs($this->admin())
             ->getJson('/api/sales/daily?limit=2')
             ->assertOk();
         $this->assertSame(['2026-10-03', '2026-10-02'], array_column($first->json('data'), 'date'));
