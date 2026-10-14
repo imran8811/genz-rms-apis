@@ -120,6 +120,53 @@ class SalesController extends Controller
         return response()->json($data);
     }
 
+    /**
+     * One row per trading day, newest first: the till's own sales beside Food
+     * Panda's, split the same way `summary` splits them (a Food Panda order is
+     * Food Panda only, never also regular). Days are bucketed on DATE(created_at)
+     * exactly as `summary?date=` reads a day, so a row here matches the Sales
+     * page for that date.
+     *
+     * Keyset-paged on the date so the Daily Sales page can keep scrolling back:
+     * pass `next_before` as `?before=` for the next page; it is null once history
+     * runs out. Days with no completed orders are skipped rather than shown as zeros.
+     */
+    public function daily(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'before' => ['nullable', 'date_format:Y-m-d'],
+            'limit'  => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
+        $limit = (int) ($validated['limit'] ?? 30);
+
+        $rows = Order::where('status', 'completed')
+            ->when($validated['before'] ?? null, fn ($q, $before) => $q->whereDate('created_at', '<', $before))
+            ->groupBy(DB::raw('DATE(created_at)'))
+            ->select(
+                DB::raw('DATE(created_at) as date'),
+                DB::raw("SUM(CASE WHEN source = 'foodpanda' THEN 0 ELSE total END) as sales"),
+                DB::raw("SUM(CASE WHEN source = 'foodpanda' THEN 0 ELSE 1 END) as sales_orders"),
+                DB::raw("SUM(CASE WHEN source = 'foodpanda' THEN total ELSE 0 END) as foodpanda"),
+                DB::raw("SUM(CASE WHEN source = 'foodpanda' THEN 1 ELSE 0 END) as foodpanda_orders"),
+            )
+            ->orderByDesc('date')
+            ->limit($limit + 1)
+            ->get();
+
+        $page = $rows->take($limit)->map(fn ($r) => [
+            'date'             => (string) $r->date,
+            'sales'            => (int) $r->sales,
+            'sales_orders'     => (int) $r->sales_orders,
+            'foodpanda'        => (int) $r->foodpanda,
+            'foodpanda_orders' => (int) $r->foodpanda_orders,
+        ])->values();
+
+        return response()->json([
+            'data'        => $page,
+            'next_before' => $rows->count() > $limit ? $page->last()['date'] : null,
+        ]);
+    }
+
     public function byDay(Request $request): JsonResponse
     {
         $days = (int) $request->get('days', 7);

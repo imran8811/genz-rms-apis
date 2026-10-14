@@ -89,6 +89,7 @@ Route::middleware(['auth:sanctum', RestrictKitchenUser::class])->group(function 
     Route::get('sales/summary', [SalesController::class, 'summary']);
     Route::get('sales/by-category', [SalesController::class, 'byCategory']);
     Route::get('sales/by-day', [SalesController::class, 'byDay']);
+    Route::get('sales/daily', [SalesController::class, 'daily']);
 
     // Purchasing
     Route::get('purchases', [PurchaseController::class, 'index']);

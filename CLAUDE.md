@@ -157,6 +157,14 @@ Endpoints:
 - `GET /orders` now carries **`complaints_count`** per row (`withCount`), so the Sales list can show
   that a bill came back without loading the complaints themselves.
 
+## Daily sales feed
+`GET /api/sales/daily[?before=YYYY-MM-DD&limit=30]` (limit max 100) — completed orders grouped by
+`DATE(created_at)`, newest first: `{ data: [{ date, sales, sales_orders, foodpanda,
+foodpanda_orders }], next_before }`. `sales` is everything **except** `source = foodpanda`, the same
+split `summary` uses, and the day bucket is the same one `summary?date=` reads. Keyset-paged on the
+date: pass `next_before` back as `before`; `null` means no older days. Days with no completed orders
+are omitted. Off the kitchen allowlist. Covered by `tests/Feature/DailySalesTest.php`.
+
 ## Stock: derived from purchases and sales, never typed
 `inventory_items.current_stock` used to be moved **only** by the manual adjust button — Purchasing
 worked out how much had arrived and never put it on a shelf, Billing never took anything off one —
